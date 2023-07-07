@@ -1,90 +1,44 @@
-#![allow(unused_imports)]
-
-use pnet::datalink::Channel::Ethernet;
-use pnet::datalink::*;
-use pnet::packet::ethernet::*;
-use pnet::packet::icmp::IcmpPacket;
-use pnet::packet::*;
+use pnet::packet::icmp::echo_reply::MutableEchoReplyPacket;
+use pnet::packet::icmp::IcmpCode;
+use pnet::packet::icmp::IcmpTypes;
+use pnet::packet::ip::IpNextHeaderProtocol;
+use pnet::transport::icmp_packet_iter;
 use pnet::transport::transport_channel;
-use pnet::transport::TransportReceiver;
-use pnet::transport::TransportSender;
-use pnet::{datalink, packet::icmp::MutableIcmpPacket};
+use pnet::transport::*;
 
-#[allow(unused_variables, unused_imports, unused_mut)]
-use std::net::{TcpListener, TcpStream};
 use std::*;
 
 fn main() -> std::io::Result<()> {
-    let interface_name = env::args().nth(1).unwrap();
-    let interface_names_match = |iface: &NetworkInterface| iface.name == interface_name;
-
-    // Find the network interface with the provided name
-    let interfaces = datalink::interfaces();
-    let interface = interfaces
-        .into_iter()
-        .filter(interface_names_match)
-        .next()
-        .unwrap();
-
-    // println!("Interface is {:?}", interface.to_string());
-    // let (mut tx, mut rx) = match datalink::channel(&interface, Default::default()) {
-    //     Ok(Ethernet(tx, rx)) => (tx, rx),
-    //     Ok(_) => panic!("Unhandled channel type"),
-    //     Err(e) => panic!(
-    //         "An error occurred when creating the datalink channel: {:?}",
-    //         e
-    //     ),
-    // };
-
-    // loop {
-    //     match rx.next() {
-    //         Ok(packet) => {
-    //             let packet: IcmpPacket = IcmpPacket::new(packet).unwrap();
-    //             //println!("Packet: Source {:?}", packet.payload());
-    //             tx.build_and_send(1, packet.packet().len(), &mut |mut new_packet| {
-    //                 let mut new_packet: MutableIcmpPacket =
-    //                     MutableIcmpPacket::new(new_packet).unwrap();
-
-    //                 // Create a clone of the original packet
-    //                 new_packet.clone_from(&packet);
-
-    //                 new_packet.set_icmp_code(icmp::IcmpCode::new(0));
-    //                 new_packet.set_icmp_type(icmp::IcmpTypes::EchoReply);
-    //             });
-    //         }
-    //         Err(e) => {
-    //             eprint!("Error: {:?}", e);
-    //         }
-    //     }
-    // }
-
-    let (tx, rx) = match transport_channel(64, pnet::transport::TransportChannelType::Layer4(())) {
+    let (mut tx, mut rx) = match transport_channel(
+        64,
+        pnet::transport::TransportChannelType::Layer4(TransportProtocol::Ipv4(
+            IpNextHeaderProtocol::new(1),
+        )),
+    ) {
         Ok((tx, rx)) => (tx, rx),
         Err(e) => {
-            panic!("Error");
+            panic!("Error: {:?}", e);
         }
     };
+    let mut icmp_iter = icmp_packet_iter(&mut rx);
     loop {
-        match rx.next() {
-            Ok(packet) => {
-                let packet: IcmpPacket = IcmpPacket::new(packet).unwrap();
-                //println!("Packet: Source {:?}", packet.payload());
-                tx.build_and_send(1, packet.packet().len(), &mut |mut new_packet| {
-                    let mut new_packet: MutableIcmpPacket =
-                        MutableIcmpPacket::new(new_packet).unwrap();
+        match icmp_iter.next() {
+            Ok(ping_request) => {
+                let destination = ping_request.1;
+                let mut payload = [0u8; 64];
+                println!("Got IcmpEchoRequest from source: {:?}", destination);
 
-                    // Create a clone of the original packet
-                    new_packet.clone_from(&packet);
-
-                    new_packet.set_icmp_code(icmp::IcmpCode::new(0));
-                    new_packet.set_icmp_type(icmp::IcmpTypes::EchoReply);
-                });
+                let mut ping_response: MutableEchoReplyPacket =
+                    MutableEchoReplyPacket::new(&mut payload).unwrap();
+                ping_response.set_icmp_type(IcmpTypes::EchoReply);
+                ping_response.set_payload(b"hello");
+                ping_response.set_icmp_code(IcmpCode(0));
+                tx.send_to(ping_response, destination).unwrap();
+                println!("Sending IcmpEchoReply to destination: {:?}", destination,);
             }
             Err(e) => {
                 eprint!("Error: {:?}", e);
             }
         }
     }
-
-    Ok(())
 }
